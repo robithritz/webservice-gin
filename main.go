@@ -1,27 +1,54 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
-	"strconv"
+	"os"
+	"strings"
+
+	"robithritz/web-service-gin/morestrings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 type album struct {
-	Id     int     `json:"id"`
-	Title  string  `json:"title"`
-	Artist string  `json:"artist"`
-	Price  float64 `json:"price"`
+	Id     int      `json:"id"`
+	Title  string   `json:"title"`
+	Artist *string  `json:"artist"`
+	Price  *float64 `json:"price"`
+}
+type simpleMessage struct {
+	Status  bool   `json:"status"`
+	Message string `json:"message"`
 }
 
-var albums = []album{
-	{Id: 1, Title: "Separuh Aku", Price: 43000},
-	{Id: 2, Title: "Yang Terdalam", Artist: "D'masiv", Price: 50000},
-	{Id: 3, Title: "Luka di Hati", Artist: "Geisha", Price: 50000},
-	{Id: 4, Title: "Salah", Artist: "Geisha", Price: 50000},
-}
+var db *pgxpool.Pool
+var err error
 
 func main() {
+	fmt.Println(morestrings.ReverseRunes("!oG ,olleH"))
+
+	connStr := "postgres://postgres@localhost:5432/albums_db?sslmode=disable"
+
+	db, err = pgxpool.Connect(context.Background(), connStr)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	pingError := db.Ping(context.Background())
+	if pingError != nil {
+
+		fmt.Println(pingError)
+		os.Exit(0)
+	}
+	fmt.Println("Connected!")
+
 	router := gin.Default()
 	router.GET("/albums", getAlbums)
 	router.POST("/albums", postAlbums)
@@ -31,19 +58,46 @@ func main() {
 }
 
 func getAlbums(ctx *gin.Context) {
-	ctx.IndentedJSON(http.StatusOK, albums)
+	// var userid int
+	// var username string
+	var listData []album
+	rows, err := db.Query(context.Background(), "select id, title, artist, price from master_album order by id ASC")
+
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var obj album
+		if err := rows.Scan(&obj.Id, &obj.Title, &obj.Artist, &obj.Price); err != nil {
+			log.Fatal(err)
+		}
+		listData = append(listData, obj)
+	}
+
+	ctx.IndentedJSON(http.StatusOK, listData)
 }
 
 func postAlbums(ctx *gin.Context) {
 	var newAlbum album
+	decoder := json.NewDecoder(ctx.Request.Body)
 
-	if err := ctx.Bind(&newAlbum); err != nil {
-		return
+	err := decoder.Decode(&newAlbum)
+	if err != nil {
+		fmt.Println(err)
 	}
 
-	// ctx.Bind(&newAlbum)
+	// var artist = *newAlbum.Artist
+	// var price = *newAlbum.Price
+	// fmt.Println(artist)
+	err = db.QueryRow(context.Background(), "insert into master_album (title, artist, price) values($1, $2, $3) returning id", newAlbum.Title, newAlbum.Artist, newAlbum.Price).Scan(&newAlbum.Id)
+	if err != nil {
+		fmt.Println(err)
+	}
 
-	albums = append(albums, newAlbum)
+	// albums = append(albums, newAlbum)
 	ctx.IndentedJSON(http.StatusCreated, newAlbum)
 
 }
@@ -57,17 +111,26 @@ func getSingleAlbum(ctx *gin.Context) {
 		})
 	} else {
 		var result album
-		i, _ := strconv.Atoi(id)
 
-		for _, v := range albums {
-			if v.Id == i {
-				result = v
+		err := db.QueryRow(context.Background(), "select id, title, artist, price from master_album where id=$1", id).Scan(&result.Id, &result.Title, &result.Artist, &result.Price)
+
+		if err != nil {
+			fmt.Println(err)
+			var resp simpleMessage
+			if strings.Contains(err.Error(), "no rows") {
+				resp = simpleMessage{
+					Status:  false,
+					Message: "data not found",
+				}
+
+				ctx.IndentedJSON(http.StatusNotFound, resp)
+			} else {
+				resp = simpleMessage{
+					Status:  false,
+					Message: "something went wrong",
+				}
+				ctx.IndentedJSON(http.StatusBadGateway, resp)
 			}
-		}
-		if result.Id == 0 {
-			ctx.IndentedJSON(http.StatusNotFound, gin.H{
-				"message": "Not Found",
-			})
 			return
 		}
 		ctx.IndentedJSON(http.StatusOK, result)
